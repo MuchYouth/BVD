@@ -1,0 +1,36 @@
+cwe: CWE78
+status: supported
+sources:
+  functions:
+    - getenv
+    - fgets
+    - gets
+    - scanf
+    - fscanf
+    - recv
+    - read
+  parameters:
+    - argv
+sinks:
+  functions:
+    - system
+    - popen
+    - execl
+    - execv
+    - execle
+    - execve
+    - CreateProcess
+  argument_indices:
+    system:
+      - 0
+    popen:
+      - 0
+  argument_policy:
+    execl: all
+    execv: all
+    execle: all
+    execve: all
+    CreateProcess: all
+trace:
+  type: taint_to_call_argument
+  path_mode: intraprocedural

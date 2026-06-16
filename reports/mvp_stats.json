@@ -1,0 +1,47 @@
+{
+  "build_attempted": 0,
+  "build_failed": 0,
+  "build_success": 0,
+  "build_summary": {
+    "attempted": 0,
+    "compiler": {},
+    "failed": 0,
+    "opt_level": {},
+    "success": 0
+  },
+  "callsite_files": 0,
+  "dataset_records": 0,
+  "ghidra_attempted": 0,
+  "ghidra_failed": 0,
+  "ghidra_success": 0,
+  "ghidra_summary": {
+    "analyzed_binaries": 0,
+    "average_callsites_per_binary": 0.0,
+    "average_functions_per_binary": 0.0,
+    "average_pcode_ops_per_function": 0.0,
+    "callsite_extraction_success": 0,
+    "decompile_failure_count": 0,
+    "pcode_extraction_success": 0
+  },
+  "leakage_failed_count": 0,
+  "leakage_summary": {
+    "checked_records": 0,
+    "failed": 0,
+    "warnings": []
+  },
+  "path_found_count": 0,
+  "path_not_found_count": 0,
+  "path_unknown_count": 0,
+  "pcode_files": 0,
+  "sample_records": [],
+  "total_testcases": 0,
+  "trace_files": 0,
+  "trace_summary": {
+    "path_found_count": 0,
+    "path_not_found_count": 0,
+    "path_unknown_count": 0,
+    "sink_candidate_count": 0,
+    "source_candidate_count": 0,
+    "source_sink_pair_count": 0
+  }
+}

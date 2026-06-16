@@ -1,0 +1,68 @@
+juliet:
+  root: data/raw_juliet
+  manifest_path: data/manifests/juliet_manifest.jsonl
+
+  target_cwes:
+    mode: selected
+    selected:
+      - CWE78
+      - CWE134
+
+  active_cwes:
+    mode: selected
+    selected:
+      - CWE78
+
+  build_mode: per_testcase
+  language:
+    - c
+    - cpp
+
+  compiler:
+    c: gcc
+    cpp: g++
+
+  opt_levels:
+    - O0
+
+  variants:
+    - bad
+    - good
+
+  build:
+    timeout_sec: 60
+    jobs: 4
+    resume: true
+    force: false
+
+ghidra:
+  install_dir: /path/to/ghidra
+  project_dir: data/ghidra_projects
+  script_dir: ghidra_scripts
+  output_dir: data/pcode
+  timeout_sec: 180
+  jobs: 1
+  resume: true
+  force: false
+
+analysis:
+  mode: rule_based_intraprocedural
+  rule_dir: configs/cwe_rules
+  unsupported_cwe_policy: record_and_skip
+
+dataset:
+  binaries_dir: data/binaries
+  pcode_dir: data/pcode
+  traces_dir: data/traces
+  output_dir: data/datasets
+  anonymize_symbols: true
+  separate_metadata_and_model_input: true
+  leakage_check: true
+
+llm:
+  enabled: false
+  provider: mock
+  model: mock
+  temperature: 0
+  prompt_dir: configs/prompts
+

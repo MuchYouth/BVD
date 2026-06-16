@@ -1,0 +1,26 @@
+cwe: CWE134
+status: partially_supported
+sources:
+  functions:
+    - getenv
+    - fgets
+    - gets
+    - scanf
+    - fscanf
+    - recv
+    - read
+  parameters:
+    - argv
+sinks:
+  format_functions:
+    printf: 0
+    fprintf: 1
+    sprintf: 1
+    snprintf: 2
+    syslog: 1
+trace:
+  type: taint_to_format_argument
+  path_mode: intraprocedural
+argument_recovery:
+  on_failure: unknown
+

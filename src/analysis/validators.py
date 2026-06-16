@@ -1,0 +1,2 @@
+"""Trace validation skeleton."""
+

@@ -1,0 +1,69 @@
+# Local Codex/agent workspace metadata
+.agents/
+.codex/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and local Python installs
+.venv/
+venv/
+env/
+ENV/
+
+# Build, package, and test artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Logs and runtime scratch files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE and OS metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Large/reproducible data inputs and generated artifacts
+data/raw_juliet/
+data/binaries/*
+!data/binaries/.gitkeep
+!data/binaries/*.jsonl
+data/pcode/
+data/ghidra_projects/
+data/traces/
+
+# Optional large data workspaces under data/
+data/raw/
+data/external/
+data/interim/
+data/processed/
+data/cache/
+data/downloads/
