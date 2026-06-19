@@ -70,7 +70,8 @@ data/processed/
 data/cache/
 data/downloads/
 data/archive/
-
+data/binaries/
+data/manifests/pipeline_status.jsonl
 # repo
 external/*
 
