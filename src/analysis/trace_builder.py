@@ -1,4 +1,8 @@
-"""P-code def-use based trace candidate builder."""
+"""DEPRECATED: P-code def-use based trace candidate builder.
+
+This module is preserved only for future optional experiments. The primary
+pipeline must not use custom P-code def-use or backward-slicing trace decisions.
+"""
 
 from __future__ import annotations
 

@@ -59,6 +59,8 @@ data/binaries/*
 data/pcode/
 data/ghidra_projects/
 data/traces/
+data/llmdfa_pilot_inputs/
+data/llmdfa_outputs/
 
 # Optional large data workspaces under data/
 data/raw/
@@ -67,3 +69,10 @@ data/interim/
 data/processed/
 data/cache/
 data/downloads/
+data/archive/
+
+# repo
+external/*
+
+# external tools and dependencies
+tools/*

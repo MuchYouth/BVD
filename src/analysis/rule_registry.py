@@ -1,8 +1,11 @@
-"""Dynamic CWE rule registry.
+"""DEPRECATED for primary pipeline: dynamic CWE rule registry.
 
 Rules are loaded from YAML files under `configs/cwe_rules` by default. The
 registry normalizes every rule to the same shape so downstream modules can
 apply source/sink logic without hard-coding CWE-specific details.
+
+This remains available for reports or future optional P-code-native
+experiments, but it must not drive primary source/sink/trace generation.
 """
 
 from __future__ import annotations

@@ -17,16 +17,29 @@ from scripts.report_mvp_stats import run_report
 from scripts.run_ghidra_extract import run_extract
 from src.juliet.builder import run_build
 from src.juliet.discovery import load_config, resolve_cwe_scope, run_discovery
+from src.llmdfa_adapter.input_converter import convert_decompiled_tree
+from src.llmdfa_adapter.output_parser import parse_llmdfa_output, write_jsonl as write_llmdfa_jsonl
+from src.llmdfa_adapter.runner import run_llmdfa
 
 LOGGER = logging.getLogger(__name__)
 
-STAGES = ["discover", "build", "ghidra", "dataset", "report"]
+STAGES = [
+    "discover_juliet",
+    "build_juliet",
+    "run_ghidra_extract",
+    "convert_ghidra_to_llmdfa_input",
+    "run_llmdfa",
+    "parse_llmdfa_output",
+    "attach_ghidra_evidence",
+    "build_dataset",
+    "report",
+]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/default.yaml", help="Path to pipeline config YAML.")
-    parser.add_argument("--start-from", choices=STAGES, default="discover", help="Pipeline stage to start from.")
+    parser.add_argument("--start-from", choices=STAGES, default="discover_juliet", help="Pipeline stage to start from.")
     parser.add_argument("--cwe", action="append", help="CWE filter such as CWE78, or all. Can be repeated.")
     parser.add_argument("--limit", type=int, help="Maximum number of testcases/samples to process.")
     parser.add_argument("--dry-run", action="store_true", help="Plan stages without running build/Ghidra/dataset side effects where supported.")
@@ -67,7 +80,7 @@ def main() -> int:
 def run_pipeline(
     config_path: str | Path,
     *,
-    start_from: str = "discover",
+    start_from: str = "discover_juliet",
     cli_cwes: Iterable[str] | None = None,
     limit: int | None = None,
     dry_run: bool = False,
@@ -82,15 +95,15 @@ def run_pipeline(
     def should_run(stage: str) -> bool:
         return STAGES.index(stage) >= start_index
 
-    if should_run("discover"):
+    if should_run("discover_juliet"):
         run_stage(
-            "discover",
+            "discover_juliet",
             lambda: run_discovery(config_path, cli_cwes=cli_cwes, limit=limit, dry_run=dry_run),
             stage_errors,
         )
-    if should_run("build"):
+    if should_run("build_juliet"):
         run_stage(
-            "build",
+            "build_juliet",
             lambda: run_build(
                 config_path,
                 cli_cwes=cli_cwes,
@@ -102,21 +115,52 @@ def run_pipeline(
             ),
             stage_errors,
         )
-    if should_run("ghidra") and not dry_run:
+    if should_run("run_ghidra_extract") and not dry_run:
         run_stage(
-            "ghidra",
+            "run_ghidra_extract",
             lambda: run_extract(config_path, cli_cwes=cli_cwes, limit=limit, resume=resume, force=force, jobs=jobs),
             stage_errors,
         )
-    elif should_run("ghidra"):
+    elif should_run("run_ghidra_extract"):
         LOGGER.info("DRY-RUN skipping ghidra execution")
-    if should_run("dataset") and not dry_run:
+
+    if should_run("convert_ghidra_to_llmdfa_input") and not dry_run:
         run_stage(
-            "dataset",
+            "convert_ghidra_to_llmdfa_input",
+            lambda: run_convert_ghidra_to_llmdfa_input(config),
+            stage_errors,
+        )
+    elif should_run("convert_ghidra_to_llmdfa_input"):
+        LOGGER.info("DRY-RUN skipping LLMDFA input conversion")
+
+    if should_run("run_llmdfa") and not dry_run:
+        run_stage(
+            "run_llmdfa",
+            lambda: run_llmdfa_from_config(config, dry_run=dry_run),
+            stage_errors,
+        )
+    elif should_run("run_llmdfa"):
+        LOGGER.info("DRY-RUN skipping LLMDFA execution")
+
+    if should_run("parse_llmdfa_output") and not dry_run:
+        run_stage(
+            "parse_llmdfa_output",
+            lambda: run_parse_llmdfa_output(config),
+            stage_errors,
+        )
+    elif should_run("parse_llmdfa_output"):
+        LOGGER.info("DRY-RUN skipping LLMDFA output parsing")
+
+    if should_run("attach_ghidra_evidence"):
+        LOGGER.info("Stage attach_ghidra_evidence is performed inside build_dataset")
+
+    if should_run("build_dataset") and not dry_run:
+        run_stage(
+            "build_dataset",
             lambda: run_build_dataset(config_path, cli_cwes=cli_cwes, limit=limit, resume=resume, force=force),
             stage_errors,
         )
-    elif should_run("dataset"):
+    elif should_run("build_dataset"):
         LOGGER.info("DRY-RUN skipping dataset execution")
 
     if should_run("report"):
@@ -130,6 +174,45 @@ def run_pipeline(
     summary["stage_errors"] = stage_errors
     write_pipeline_status(config, summary)
     return summary
+
+
+def run_convert_ghidra_to_llmdfa_input(config: dict[str, Any]) -> dict[str, Any]:
+    dataset_config = config.get("dataset", {})
+    ghidra_config = config.get("ghidra", {})
+    llmdfa_config = config.get("llmdfa", {})
+    input_root = Path(ghidra_config.get("output_dir", dataset_config.get("pcode_dir", "data/pcode")))
+    output_root = Path(llmdfa_config.get("input_root", "data/llmdfa_inputs"))
+    language = str(llmdfa_config.get("language", "c"))
+    manifest_name = Path(str(llmdfa_config.get("input_manifest", "data/llmdfa_inputs/manifest.jsonl"))).name
+    return convert_decompiled_tree(input_root, output_root, language=language, manifest_name=manifest_name).to_dict()
+
+
+def run_llmdfa_from_config(config: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+    llmdfa_config = config.get("llmdfa", {})
+    result = run_llmdfa(
+        llmdfa_root=Path(llmdfa_config.get("root", "external/LLMDFA")),
+        input_manifest=Path(llmdfa_config.get("input_manifest", "data/llmdfa_inputs/manifest.jsonl")),
+        output_root=Path(llmdfa_config.get("output_root", "data/llmdfa_outputs")),
+        bug_type=str(llmdfa_config.get("bug_type", "osci")),
+        model_name=str(llmdfa_config.get("model_name", "gpt-4o-mini")),
+        analysis_mode=str(llmdfa_config.get("analysis_mode", "single")),
+        solving_refine_number=int(llmdfa_config.get("solving_refine_number", 3)),
+        syn_parser=bool(llmdfa_config.get("syn_parser", True)),
+        fscot=bool(llmdfa_config.get("fscot", True)),
+        syn_solver=bool(llmdfa_config.get("syn_solver", True)),
+        dry_run=dry_run or bool(llmdfa_config.get("dry_run", False)),
+        allow_upstream_benchmark_run=bool(llmdfa_config.get("allow_upstream_benchmark_run", False)),
+    )
+    return result.to_dict()
+
+
+def run_parse_llmdfa_output(config: dict[str, Any]) -> dict[str, Any]:
+    llmdfa_config = config.get("llmdfa", {})
+    output_root = Path(llmdfa_config.get("output_root", "data/llmdfa_outputs"))
+    parsed_path = Path(llmdfa_config.get("parsed_output_path", "data/llmdfa_outputs/parsed_results.jsonl"))
+    records = [record.to_dict() for record in parse_llmdfa_output(output_root)]
+    written = write_llmdfa_jsonl(parsed_path, records)
+    return {"records": len(records), "written": written, "parsed_path": parsed_path.as_posix()}
 
 
 def run_stage(stage: str, func: Callable[[], Any], stage_errors: dict[str, str]) -> None:
@@ -152,33 +235,38 @@ def collect_summary(config: dict[str, Any], *, cli_cwes: Iterable[str] | None = 
     binaries_dir = Path(dataset_config.get("binaries_dir", "data/binaries"))
     build_metadata_path = binaries_dir / "build_metadata.jsonl"
     pcode_dir = Path(ghidra_config.get("output_dir", dataset_config.get("pcode_dir", "data/pcode")))
-    traces_dir = Path(dataset_config.get("traces_dir", "data/traces"))
     output_dir = Path(dataset_config.get("output_dir", "data/datasets"))
+    llmdfa_config = config.get("llmdfa", {})
+    llmdfa_input_root = Path(llmdfa_config.get("input_root", "data/llmdfa_inputs"))
+    llmdfa_parsed_path = Path(llmdfa_config.get("parsed_output_path", "data/llmdfa_outputs/parsed_results.jsonl"))
 
     manifest_records = filter_by_cwe(read_jsonl(manifest_path), cwe_scope)
     build_records = filter_by_cwe(read_jsonl(build_metadata_path), cwe_scope)
     dataset_records = read_dataset_records(output_dir, cwe_scope)
-    trace_records = read_trace_records(traces_dir, cwe_scope)
 
     pcode_files = count_files(pcode_dir, "*.pcode.jsonl", cwe_scope)
     callsite_files = count_files(pcode_dir, "*.callsites.jsonl", cwe_scope)
-    trace_files = count_files(traces_dir, "*.trace.jsonl", cwe_scope)
+    decompiled_files = count_files(pcode_dir, "*.decompiled.jsonl", cwe_scope)
+    llmdfa_input_files = count_files(llmdfa_input_root, "*.c", None) + count_files(llmdfa_input_root, "*.cpp", None)
+    llmdfa_records = read_jsonl(llmdfa_parsed_path)
 
     return {
         "total_testcases": sum(1 for record in manifest_records if record.get("build_candidate") is True),
-        "build_attempted": len(build_records),
+        "build_attempted": sum(1 for record in build_records if not record.get("skipped")),
         "build_success": sum(1 for record in build_records if record.get("compile_success") is True),
-        "build_failed": sum(1 for record in build_records if record.get("compile_success") is not True),
+        "build_failed": sum(
+            1 for record in build_records if record.get("compile_success") is not True and not record.get("skipped")
+        ),
+        "build_skipped": sum(1 for record in build_records if record.get("skipped")),
         "ghidra_attempted": max(pcode_files, callsite_files),
         "ghidra_success": count_ghidra_successes(pcode_dir, cwe_scope),
         "ghidra_failed": count_ghidra_failures(pcode_dir, cwe_scope),
+        "decompiled_files": decompiled_files,
         "pcode_files": pcode_files,
         "callsite_files": callsite_files,
-        "trace_files": trace_files,
+        "llmdfa_input_files": llmdfa_input_files,
+        "llmdfa_records": len(llmdfa_records),
         "dataset_records": len(dataset_records),
-        "path_found_count": sum(1 for record in trace_records if record.get("path_found") is True),
-        "path_not_found_count": sum(1 for record in trace_records if record.get("path_found") is False),
-        "path_unknown_count": sum(1 for record in trace_records if record.get("path_found") == "unknown"),
         "leakage_failed_count": sum(1 for record in dataset_records if record.get("leakage_check", {}).get("status") == "failed"),
     }
 
@@ -191,7 +279,6 @@ def write_pipeline_status(config: dict[str, Any], summary: dict[str, Any]) -> No
     status_path = manifest_path.parent / "pipeline_status.jsonl"
     binaries_dir = Path(dataset_config.get("binaries_dir", "data/binaries"))
     pcode_dir = Path(ghidra_config.get("output_dir", dataset_config.get("pcode_dir", "data/pcode")))
-    traces_dir = Path(dataset_config.get("traces_dir", "data/traces"))
     output_dir = Path(dataset_config.get("output_dir", "data/datasets"))
 
     records: dict[tuple[str, str, str, str], dict[str, Any]] = {}
@@ -202,16 +289,22 @@ def write_pipeline_status(config: dict[str, Any], summary: dict[str, Any]) -> No
             str(build.get("variant", "")),
             str(build.get("opt_level", "")),
         )
+        build_status = "success" if build.get("compile_success") is True else "failed"
+        if build.get("skipped"):
+            build_status = "skipped"
+        last_error = ""
+        if build.get("compile_success") is not True:
+            last_error = str(build.get("compile_stderr", "") or build.get("skip_reason", ""))[:500]
         records[key] = {
             "sample_id": key[0],
             "cwe": key[1],
             "variant": key[2],
             "opt_level": key[3],
-            "build_status": "success" if build.get("compile_success") is True else "failed",
+            "build_status": build_status,
             "ghidra_status": "unknown",
-            "trace_status": "unknown",
+            "llmdfa_status": "unknown",
             "dataset_status": "unknown",
-            "last_error": "" if build.get("compile_success") is True else str(build.get("compile_stderr", ""))[:500],
+            "last_error": last_error,
             "updated_at": utc_now(),
         }
 
@@ -220,9 +313,9 @@ def write_pipeline_status(config: dict[str, Any], summary: dict[str, Any]) -> No
         sample_pcode_dir = pcode_dir / cwe / variant / opt_level
         pcode_path = sample_pcode_dir / f"{sample_id}.pcode.jsonl"
         callsite_path = sample_pcode_dir / f"{sample_id}.callsites.jsonl"
-        trace_path = traces_dir / cwe / variant / opt_level / f"{sample_id}.trace.jsonl"
-        record["ghidra_status"] = "success" if pcode_path.exists() and callsite_path.exists() else "failed"
-        record["trace_status"] = "success" if trace_path.exists() else "failed"
+        decompiled_path = sample_pcode_dir / f"{sample_id}.decompiled.jsonl"
+        record["ghidra_status"] = "success" if decompiled_path.exists() and pcode_path.exists() and callsite_path.exists() else "failed"
+        record["llmdfa_status"] = "unknown"
         record["dataset_status"] = "success" if dataset_contains_sample(output_dir, sample_id) else "failed"
         record["updated_at"] = utc_now()
 
@@ -264,15 +357,6 @@ def read_dataset_records(output_dir: Path, cwe_scope: set[str] | None) -> list[d
     return records
 
 
-def read_trace_records(traces_dir: Path, cwe_scope: set[str] | None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for path in traces_dir.rglob("*.trace.jsonl"):
-        if cwe_scope is not None and not any(part in cwe_scope for part in path.parts):
-            continue
-        records.extend(read_jsonl(path))
-    return records
-
-
 def count_files(root: Path, pattern: str, cwe_scope: set[str] | None) -> int:
     if not root.exists():
         return 0
@@ -293,7 +377,8 @@ def count_ghidra_successes(pcode_dir: Path, cwe_scope: set[str] | None) -> int:
             continue
         sample = pcode_path.name.removesuffix(".pcode.jsonl")
         callsite_path = pcode_path.with_name(f"{sample}.callsites.jsonl")
-        if callsite_path.exists():
+        decompiled_path = pcode_path.with_name(f"{sample}.decompiled.jsonl")
+        if decompiled_path.exists() and callsite_path.exists():
             success += 1
     return success
 
@@ -324,16 +409,16 @@ def print_summary(summary: dict[str, Any]) -> None:
         "build_attempted",
         "build_success",
         "build_failed",
+        "build_skipped",
         "ghidra_attempted",
         "ghidra_success",
         "ghidra_failed",
+        "decompiled_files",
         "pcode_files",
         "callsite_files",
-        "trace_files",
+        "llmdfa_input_files",
+        "llmdfa_records",
         "dataset_records",
-        "path_found_count",
-        "path_not_found_count",
-        "path_unknown_count",
         "leakage_failed_count",
     ]
     for key in keys:

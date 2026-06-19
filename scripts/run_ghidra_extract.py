@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Ghidra headless P-code and callsite extraction."""
+"""Run Ghidra headless decompile extraction with P-code evidence."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ class GhidraJob:
     opt_level: str
     binary_path: Path
     output_dir: Path
+    decompiled_path: Path
     pcode_path: Path
     callsites_path: Path
     errors_path: Path
@@ -254,6 +255,7 @@ def create_job(
         opt_level=opt_level,
         binary_path=Path(str(record["binary_path"])),
         output_dir=output_dir,
+        decompiled_path=output_dir / f"{sample_id}.decompiled.jsonl",
         pcode_path=output_dir / f"{sample_id}.pcode.jsonl",
         callsites_path=output_dir / f"{sample_id}.callsites.jsonl",
         errors_path=output_dir / f"{sample_id}.ghidra_errors.jsonl",
@@ -261,7 +263,7 @@ def create_job(
         project_dir=project_dir,
         project_name=project_name,
         script_dir=script_dir,
-        script_name="DumpPcodeJson.java",
+        script_name="DumpDecompileAndPcode.java",
         analyze_headless=analyze_headless,
         timeout_sec=timeout_sec,
     )
@@ -289,7 +291,13 @@ def run_job(job: GhidraJob, *, resume: bool, force: bool) -> dict[str, Any]:
         )
         log_text = format_log(command, started_at, utc_now(), completed.returncode, completed.stdout, completed.stderr)
         write_text(job.log_path, log_text)
-        success = completed.returncode == 0 and job.pcode_path.exists() and job.callsites_path.exists()
+        success = (
+            completed.returncode == 0
+            and job.decompiled_path.exists()
+            and job.pcode_path.exists()
+            and job.callsites_path.exists()
+            and job.errors_path.exists()
+        )
         if not success:
             append_ghidra_error(job, "ghidra_failed", f"returncode={completed.returncode}")
         return {"sample_id": job.sample_id, "success": success, "skipped": False}
@@ -325,14 +333,20 @@ def command_for_job(job: GhidraJob) -> list[str]:
 
 
 def extraction_outputs_exist(job: GhidraJob) -> bool:
-    return job.pcode_path.exists() and job.callsites_path.exists() and job.errors_path.exists()
+    return (
+        job.decompiled_path.exists()
+        and job.pcode_path.exists()
+        and job.callsites_path.exists()
+        and job.errors_path.exists()
+    )
 
 
 def append_ghidra_error(job: GhidraJob, error_type: str, message: str) -> None:
     record = {
         "sample_id": job.sample_id,
         "binary_name": job.binary_path.name,
-        "function_name": "",
+        "function_id": "",
+        "original_function_name": "",
         "function_entry": "",
         "error_type": error_type,
         "message": message,

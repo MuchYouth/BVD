@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report CWE support coverage matrix."""
+"""DEPRECATED experimental report for old P-code-native CWE rule coverage."""
 
 from __future__ import annotations
 

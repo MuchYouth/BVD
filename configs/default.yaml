@@ -1,5 +1,5 @@
 juliet:
-  root: data/raw_juliet
+  root: data/raw_juliet/juliet-test-suite-v1.3
   manifest_path: data/manifests/juliet_manifest.jsonl
 
   target_cwes:
@@ -36,7 +36,7 @@ juliet:
     force: false
 
 ghidra:
-  install_dir: /path/to/ghidra
+  install_dir: /opt/ghidra
   project_dir: data/ghidra_projects
   script_dir: ghidra_scripts
   output_dir: data/pcode
@@ -46,9 +46,39 @@ ghidra:
   force: false
 
 analysis:
-  mode: rule_based_intraprocedural
+  mode: llmdfa_primary
   rule_dir: configs/cwe_rules
   unsupported_cwe_policy: record_and_skip
+
+llmdfa:
+  root: external/LLMDFA
+  input_root: data/llmdfa_inputs
+  input_manifest: data/llmdfa_inputs/manifest.jsonl
+  output_root: data/llmdfa_outputs
+  parsed_output_path: data/llmdfa_outputs/parsed_results.jsonl
+  language: c
+  bug_type: osci
+  model_name: gpt-4o-mini
+  analysis_mode: single
+  solving_refine_number: 3
+  syn_parser: true
+  fscot: true
+  syn_solver: true
+  dry_run: false
+  allow_upstream_benchmark_run: false
+
+llmdfa_pilot:
+  input_root: data/pcode
+  pilot_input_root: data/llmdfa_pilot_inputs
+  output_root: data/llmdfa_outputs/pilot_freellm_gpt4o
+  provider: freellm
+  model: gpt-4o
+  base_url: http://127.0.0.1:3001
+  api_key_env: FREELLM_API_KEY
+  temperature: 0
+  timeout_sec: 120
+  daily_limit: 50
+  prompt_path: configs/prompts/llmdfa_decompiled_trace_v1.md
 
 dataset:
   binaries_dir: data/binaries
@@ -65,4 +95,3 @@ llm:
   model: mock
   temperature: 0
   prompt_dir: configs/prompts
-

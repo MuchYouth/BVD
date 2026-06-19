@@ -63,42 +63,45 @@ def collect_summary(config: dict[str, Any], *, cwe_scope: set[str] | None, limit
     binaries_dir = Path(dataset_config.get("binaries_dir", "data/binaries"))
     build_metadata_path = binaries_dir / "build_metadata.jsonl"
     pcode_dir = Path(ghidra_config.get("output_dir", dataset_config.get("pcode_dir", "data/pcode")))
-    traces_dir = Path(dataset_config.get("traces_dir", "data/traces"))
     output_dir = Path(dataset_config.get("output_dir", "data/datasets"))
+    llmdfa_config = config.get("llmdfa", {})
+    llmdfa_parsed_path = Path(llmdfa_config.get("parsed_output_path", "data/llmdfa_outputs/parsed_results.jsonl"))
 
     manifest_records = apply_limit(filter_by_cwe(read_jsonl(manifest_path), cwe_scope), limit)
     build_records = apply_limit(filter_by_cwe(read_jsonl(build_metadata_path), cwe_scope), limit)
-    trace_records = apply_limit(read_trace_records(traces_dir, cwe_scope), limit)
+    llmdfa_records = apply_limit(read_jsonl(llmdfa_parsed_path), limit)
     dataset_records = apply_limit(read_dataset_records(output_dir, cwe_scope), limit)
     pcode_records_by_file = read_records_by_file(pcode_dir, "*.pcode.jsonl", cwe_scope)
     callsite_records_by_file = read_records_by_file(pcode_dir, "*.callsites.jsonl", cwe_scope)
+    decompiled_records_by_file = read_records_by_file(pcode_dir, "*.decompiled.jsonl", cwe_scope)
     ghidra_error_records = read_records_from_tree(pcode_dir, "*.ghidra_errors.jsonl", cwe_scope)
 
     build_summary = build_stats(build_records)
-    ghidra_summary = ghidra_stats(pcode_records_by_file, callsite_records_by_file, ghidra_error_records)
-    trace_summary = trace_stats(trace_records)
+    ghidra_summary = ghidra_stats(pcode_records_by_file, callsite_records_by_file, decompiled_records_by_file, ghidra_error_records)
+    llmdfa_summary = llmdfa_stats(llmdfa_records)
     leakage_summary = leakage_stats(dataset_records)
-    sample_records = sample_trace_records(trace_records, limit=3)
+    sample_records = sample_dataset_records(dataset_records, limit=3)
 
     summary = {
         "total_testcases": sum(1 for record in manifest_records if record.get("build_candidate") is True),
-        "build_attempted": len(build_records),
+        "build_attempted": sum(1 for record in build_records if not record.get("skipped")),
         "build_success": sum(1 for record in build_records if record.get("compile_success") is True),
-        "build_failed": sum(1 for record in build_records if record.get("compile_success") is not True),
+        "build_failed": sum(
+            1 for record in build_records if record.get("compile_success") is not True and not record.get("skipped")
+        ),
+        "build_skipped": sum(1 for record in build_records if record.get("skipped")),
         "ghidra_attempted": max(count_files(pcode_dir, "*.pcode.jsonl", cwe_scope), count_files(pcode_dir, "*.callsites.jsonl", cwe_scope)),
         "ghidra_success": count_ghidra_successes(pcode_dir, cwe_scope),
         "ghidra_failed": count_ghidra_failures(pcode_dir, cwe_scope),
+        "decompiled_files": count_files(pcode_dir, "*.decompiled.jsonl", cwe_scope),
         "pcode_files": count_files(pcode_dir, "*.pcode.jsonl", cwe_scope),
         "callsite_files": count_files(pcode_dir, "*.callsites.jsonl", cwe_scope),
-        "trace_files": count_files(traces_dir, "*.trace.jsonl", cwe_scope),
+        "llmdfa_records": len(llmdfa_records),
         "dataset_records": len(dataset_records),
-        "path_found_count": sum(1 for record in trace_records if record.get("path_found") is True),
-        "path_not_found_count": sum(1 for record in trace_records if record.get("path_found") is False),
-        "path_unknown_count": sum(1 for record in trace_records if record.get("path_found") == "unknown"),
         "leakage_failed_count": sum(1 for record in dataset_records if record.get("leakage_check", {}).get("status") == "failed"),
         "build_summary": build_summary,
         "ghidra_summary": ghidra_summary,
-        "trace_summary": trace_summary,
+        "llmdfa_summary": llmdfa_summary,
         "leakage_summary": leakage_summary,
         "sample_records": sample_records,
     }
@@ -141,15 +144,6 @@ def read_dataset_records(output_dir: Path, cwe_scope: set[str] | None) -> list[d
     return records
 
 
-def read_trace_records(traces_dir: Path, cwe_scope: set[str] | None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for path in traces_dir.rglob("*.trace.jsonl"):
-        if cwe_scope is not None and not any(part in cwe_scope for part in path.parts):
-            continue
-        records.extend(read_jsonl(path))
-    return records
-
-
 def read_records_from_tree(root: Path, pattern: str, cwe_scope: set[str] | None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if not root.exists():
@@ -175,10 +169,15 @@ def read_records_by_file(root: Path, pattern: str, cwe_scope: set[str] | None) -
 def build_stats(build_records: list[dict[str, Any]]) -> dict[str, Any]:
     compilers = Counter(str(record.get("compiler", "")) for record in build_records if record.get("compiler"))
     opt_levels = Counter(str(record.get("opt_level", "")) for record in build_records if record.get("opt_level"))
+    skip_reasons = Counter(str(record.get("skip_reason", "")) for record in build_records if record.get("skipped"))
     return {
-        "attempted": len(build_records),
+        "attempted": sum(1 for record in build_records if not record.get("skipped")),
         "success": sum(1 for record in build_records if record.get("compile_success") is True),
-        "failed": sum(1 for record in build_records if record.get("compile_success") is not True),
+        "failed": sum(
+            1 for record in build_records if record.get("compile_success") is not True and not record.get("skipped")
+        ),
+        "skipped": sum(1 for record in build_records if record.get("skipped")),
+        "skip_reason": dict(skip_reasons),
         "compiler": dict(compilers),
         "opt_level": dict(opt_levels),
     }
@@ -187,6 +186,7 @@ def build_stats(build_records: list[dict[str, Any]]) -> dict[str, Any]:
 def ghidra_stats(
     pcode_records_by_file: dict[str, list[dict[str, Any]]],
     callsite_records_by_file: dict[str, list[dict[str, Any]]],
+    decompiled_records_by_file: dict[str, list[dict[str, Any]]],
     error_records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     function_counts = []
@@ -206,6 +206,7 @@ def ghidra_stats(
 
     return {
         "analyzed_binaries": max(len(pcode_records_by_file), len(callsite_records_by_file)),
+        "decompile_success": len(decompiled_records_by_file),
         "pcode_extraction_success": len(pcode_records_by_file),
         "callsite_extraction_success": len(callsite_records_by_file),
         "decompile_failure_count": len(error_records),
@@ -215,14 +216,13 @@ def ghidra_stats(
     }
 
 
-def trace_stats(trace_records: list[dict[str, Any]]) -> dict[str, Any]:
+def llmdfa_stats(llmdfa_records: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "source_candidate_count": sum(1 for record in trace_records if record.get("source")),
-        "sink_candidate_count": sum(1 for record in trace_records if record.get("sink")),
-        "source_sink_pair_count": len(trace_records),
-        "path_found_count": sum(1 for record in trace_records if record.get("path_found") is True),
-        "path_not_found_count": sum(1 for record in trace_records if record.get("path_found") is False),
-        "path_unknown_count": sum(1 for record in trace_records if record.get("path_found") == "unknown"),
+        "records": len(llmdfa_records),
+        "source_sink_result_count": sum(1 for record in llmdfa_records if record.get("source_sink_result")),
+        "dataflow_result_count": sum(1 for record in llmdfa_records if record.get("dataflow_result")),
+        "path_validation_result_count": sum(1 for record in llmdfa_records if record.get("path_validation_result")),
+        "warning_count": sum(len(record.get("warnings", [])) for record in llmdfa_records),
     }
 
 
@@ -246,18 +246,17 @@ def leakage_stats(dataset_records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def sample_trace_records(trace_records: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+def sample_dataset_records(dataset_records: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
-    for record in trace_records[:limit]:
+    for record in dataset_records[:limit]:
         samples.append(
             {
                 "sample_id": record.get("sample_id", ""),
                 "function_id": record.get("function_id", ""),
-                "source_location": record.get("source", {}).get("source_location", ""),
-                "sink_location": record.get("sink", {}).get("sink_location", ""),
-                "path_found": record.get("path_found", ""),
-                "reason": record.get("reason", ""),
-                "trace_op_count": len(record.get("trace_ops", [])),
+                "llmdfa_record_id": record.get("llmdfa_result", {}).get("record_id", ""),
+                "callsite_count": len(record.get("ghidra_evidence", {}).get("callsites", [])),
+                "pcode_op_count": len(record.get("ghidra_evidence", {}).get("pcode_ops", [])),
+                "leakage_status": record.get("leakage_check", {}).get("status", ""),
             }
         )
     return samples
@@ -266,7 +265,7 @@ def sample_trace_records(trace_records: list[dict[str, Any]], *, limit: int) -> 
 def render_markdown(summary: dict[str, Any]) -> str:
     build = summary["build_summary"]
     ghidra = summary["ghidra_summary"]
-    trace = summary["trace_summary"]
+    llmdfa = summary["llmdfa_summary"]
     leakage = summary["leakage_summary"]
     lines = [
         "# MVP Stats Report",
@@ -276,12 +275,15 @@ def render_markdown(summary: dict[str, Any]) -> str:
         f"- Attempted: {build['attempted']}",
         f"- Success: {build['success']}",
         f"- Failed: {build['failed']}",
+        f"- Skipped: {build['skipped']}",
+        f"- Skip reason: {format_counter(build['skip_reason'])}",
         f"- Compiler: {format_counter(build['compiler'])}",
         f"- Opt level: {format_counter(build['opt_level'])}",
         "",
         "## Ghidra Extraction Summary",
         "",
         f"- Analyzed binaries: {ghidra['analyzed_binaries']}",
+        f"- Decompile success: {ghidra['decompile_success']}",
         f"- P-code extraction success: {ghidra['pcode_extraction_success']}",
         f"- Callsite extraction success: {ghidra['callsite_extraction_success']}",
         f"- Decompile failure count: {ghidra['decompile_failure_count']}",
@@ -289,14 +291,13 @@ def render_markdown(summary: dict[str, Any]) -> str:
         f"- Average P-code ops per function: {ghidra['average_pcode_ops_per_function']:.2f}",
         f"- Average callsites per binary: {ghidra['average_callsites_per_binary']:.2f}",
         "",
-        "## Trace Summary",
+        "## LLMDFA Summary",
         "",
-        f"- Source candidate count: {trace['source_candidate_count']}",
-        f"- Sink candidate count: {trace['sink_candidate_count']}",
-        f"- Source-sink pair count: {trace['source_sink_pair_count']}",
-        f"- Path found: {trace['path_found_count']}",
-        f"- Path not found: {trace['path_not_found_count']}",
-        f"- Path unknown: {trace['path_unknown_count']}",
+        f"- Parsed records: {llmdfa['records']}",
+        f"- Source/sink result count: {llmdfa['source_sink_result_count']}",
+        f"- Dataflow result count: {llmdfa['dataflow_result_count']}",
+        f"- Path validation result count: {llmdfa['path_validation_result_count']}",
+        f"- Warning count: {llmdfa['warning_count']}",
         "",
         "## Dataset Leakage Check",
         "",
@@ -310,18 +311,17 @@ def render_markdown(summary: dict[str, Any]) -> str:
             lines.append(f"- {warning}")
     lines.extend(["", "## Sample Records", ""])
     if not summary["sample_records"]:
-        lines.append("No trace records available.")
+        lines.append("No dataset records available.")
     else:
         for sample in summary["sample_records"]:
             lines.extend(
                 [
                     f"### {sample['sample_id']} / {sample['function_id']}",
                     "",
-                    f"- Source location: {sample['source_location']}",
-                    f"- Sink location: {sample['sink_location']}",
-                    f"- Path found: {sample['path_found']}",
-                    f"- Reason: {sample['reason']}",
-                    f"- Trace op count: {sample['trace_op_count']}",
+                    f"- LLMDFA record id: {sample['llmdfa_record_id']}",
+                    f"- Callsite count: {sample['callsite_count']}",
+                    f"- P-code op count: {sample['pcode_op_count']}",
+                    f"- Leakage status: {sample['leakage_status']}",
                     "",
                 ]
             )
@@ -342,7 +342,7 @@ def count_ghidra_successes(pcode_dir: Path, cwe_scope: set[str] | None) -> int:
         if cwe_scope is not None and not any(part in cwe_scope for part in pcode_path.parts):
             continue
         sample = pcode_path.name.removesuffix(".pcode.jsonl")
-        if pcode_path.with_name(f"{sample}.callsites.jsonl").exists():
+        if pcode_path.with_name(f"{sample}.decompiled.jsonl").exists() and pcode_path.with_name(f"{sample}.callsites.jsonl").exists():
             success += 1
     return success
 

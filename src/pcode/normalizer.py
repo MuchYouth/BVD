@@ -1,4 +1,9 @@
-"""Normalize P-code records for trace building and model input."""
+"""DEPRECATED: P-code normalization helpers for optional experiments.
+
+The primary pipeline reads P-code/callsite JSONL as binary evidence and does
+not use normalized P-code for model input, source/sink extraction, dataflow, or
+trace generation.
+"""
 
 from __future__ import annotations
 

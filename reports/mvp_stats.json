@@ -1,16 +1,24 @@
 {
-  "build_attempted": 0,
-  "build_failed": 0,
+  "build_attempted": 4,
+  "build_failed": 4,
+  "build_skipped": 0,
   "build_success": 0,
   "build_summary": {
-    "attempted": 0,
-    "compiler": {},
-    "failed": 0,
-    "opt_level": {},
+    "attempted": 4,
+    "compiler": {
+      "gcc": 4
+    },
+    "failed": 4,
+    "opt_level": {
+      "O0": 4
+    },
+    "skip_reason": {},
+    "skipped": 0,
     "success": 0
   },
   "callsite_files": 0,
   "dataset_records": 0,
+  "decompiled_files": 0,
   "ghidra_attempted": 0,
   "ghidra_failed": 0,
   "ghidra_success": 0,
@@ -21,6 +29,7 @@
     "average_pcode_ops_per_function": 0.0,
     "callsite_extraction_success": 0,
     "decompile_failure_count": 0,
+    "decompile_success": 0,
     "pcode_extraction_success": 0
   },
   "leakage_failed_count": 0,
@@ -29,19 +38,15 @@
     "failed": 0,
     "warnings": []
   },
-  "path_found_count": 0,
-  "path_not_found_count": 0,
-  "path_unknown_count": 0,
+  "llmdfa_records": 0,
+  "llmdfa_summary": {
+    "dataflow_result_count": 0,
+    "path_validation_result_count": 0,
+    "records": 0,
+    "source_sink_result_count": 0,
+    "warning_count": 0
+  },
   "pcode_files": 0,
   "sample_records": [],
-  "total_testcases": 0,
-  "trace_files": 0,
-  "trace_summary": {
-    "path_found_count": 0,
-    "path_not_found_count": 0,
-    "path_unknown_count": 0,
-    "sink_candidate_count": 0,
-    "source_candidate_count": 0,
-    "source_sink_pair_count": 0
-  }
+  "total_testcases": 101035
 }

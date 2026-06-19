@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build trace candidates and dataset records."""
+"""Build dataset records from LLMDFA output plus Ghidra evidence."""
 
 from __future__ import annotations
 
@@ -7,19 +7,15 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.analysis.rule_registry import RuleRegistry
-from src.analysis.llm_trace import client_from_config, review_trace_with_client
-from src.analysis.source_sink import extract_source_sink_pairs
-from src.analysis.trace_builder import build_trace_candidates
 from src.dataset.writer import build_dataset_record, write_jsonl
+from src.ghidra_evidence.linker import attach_ghidra_evidence
+from src.ghidra_evidence.loader import evidence_paths_for_metadata, load_sample_evidence
 from src.juliet.discovery import load_config, resolve_cwe_scope
-from src.pcode.normalizer import group_by_function
-from src.pcode.parser import load_callsites_jsonl, load_pcode_jsonl
+from src.llmdfa_adapter.output_parser import parse_llmdfa_output
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,8 +24,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/default.yaml", help="Path to pipeline config YAML.")
     parser.add_argument("--cwe", action="append", help="CWE filter such as CWE78, or all. Can be repeated.")
-    parser.add_argument("--limit", type=int, help="Maximum number of samples to process.")
-    parser.add_argument("--resume", action="store_true", help="Reuse existing successful trace outputs.")
+    parser.add_argument("--limit", type=int, help="Maximum number of LLMDFA records to process.")
+    parser.add_argument("--resume", action="store_true", help="Reuse existing dataset output when present.")
     parser.add_argument("--force", action="store_true", help="Regenerate outputs even if they exist.")
     return parser.parse_args()
 
@@ -37,7 +33,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    logging.info("build_dataset started")
     summary = run_build_dataset(
         args.config,
         cli_cwes=args.cwe,
@@ -46,11 +41,11 @@ def main() -> int:
         force=args.force,
     )
     logging.info(
-        "Dataset summary: samples=%s traces=%s records=%s dataset=%s",
-        summary["samples"],
-        summary["traces"],
+        "Dataset summary: llmdfa_records=%s records=%s dataset=%s leakage_failed=%s",
+        summary["llmdfa_records"],
         summary["records"],
         summary["dataset_path"],
+        summary["leakage_failed"],
     )
     return 0
 
@@ -65,101 +60,165 @@ def run_build_dataset(
 ) -> dict[str, Any]:
     config = load_config(config_path)
     dataset_config = config.get("dataset", {})
-    analysis_config = config.get("analysis", {})
-    pcode_dir = Path(dataset_config.get("pcode_dir", "data/pcode"))
-    traces_dir = Path(dataset_config.get("traces_dir", "data/traces"))
+    ghidra_config = config.get("ghidra", {})
+    llmdfa_config = config.get("llmdfa", {})
+
+    pcode_dir = Path(ghidra_config.get("output_dir", dataset_config.get("pcode_dir", "data/pcode")))
     output_dir = Path(dataset_config.get("output_dir", "data/datasets"))
     binaries_dir = Path(dataset_config.get("binaries_dir", "data/binaries"))
     metadata_path = binaries_dir / "build_metadata.jsonl"
+    conversion_manifest_path = Path(llmdfa_config.get("input_manifest", "data/llmdfa_inputs/manifest.jsonl"))
+    parsed_llmdfa_path = Path(llmdfa_config.get("parsed_output_path", "data/llmdfa_outputs/parsed_results.jsonl"))
+    llmdfa_output_root = Path(llmdfa_config.get("output_root", "data/llmdfa_outputs"))
 
     cwe_scope = resolve_cwe_scope(config, cli_cwes)
-    registry = RuleRegistry(analysis_config.get("rule_dir", "configs/cwe_rules"))
-    llm_client = client_from_config(config)
-    llm_enabled = bool(config.get("llm", {}).get("enabled", False))
-    build_records = select_build_records(read_jsonl(metadata_path), cwe_scope=cwe_scope, limit=limit)
+    dataset_path = output_dir / dataset_name(config, cwe_scope)
+    if resume and not force and dataset_path.exists():
+        records = read_jsonl(dataset_path)
+        return {
+            "llmdfa_records": len(records),
+            "records": len(records),
+            "dataset_path": dataset_path,
+            "leakage_failed": sum(1 for record in records if record.get("leakage_check", {}).get("status") == "failed"),
+            "resumed": True,
+        }
+
+    metadata_by_sample = index_build_metadata(read_jsonl(metadata_path), cwe_scope=cwe_scope)
+    conversions = read_jsonl(conversion_manifest_path)
+    conversions_by_source = index_conversions_by_source(conversions)
+    conversions_by_function = {str(record.get("function_id", "")): record for record in conversions}
+    llmdfa_records = load_llmdfa_records(parsed_llmdfa_path, llmdfa_output_root)
 
     dataset_records = []
-    total_traces = 0
-    processed_samples = 0
-
-    for metadata in build_records:
-        cwe = str(metadata.get("cwe", ""))
-        rule = registry.get_rule(cwe)
-        if rule.is_unsupported:
-            LOGGER.warning("Skipping unsupported CWE during dataset build: %s", cwe)
+    evidence_cache: dict[tuple[str, str, str, str], Any] = {}
+    for llmdfa_record in llmdfa_records:
+        conversion = find_conversion(llmdfa_record, conversions_by_source, conversions_by_function)
+        if not conversion:
+            LOGGER.warning("Skipping LLMDFA record without conversion mapping: %s", llmdfa_record.get("record_id", ""))
             continue
 
-        sample_id = str(metadata["sample_id"])
-        variant = str(metadata["variant"])
-        opt_level = str(metadata["opt_level"])
-        sample_pcode_dir = pcode_dir / cwe / variant / opt_level
-        pcode_path = sample_pcode_dir / f"{sample_id}.pcode.jsonl"
-        callsites_path = sample_pcode_dir / f"{sample_id}.callsites.jsonl"
-        trace_path = traces_dir / cwe / variant / opt_level / f"{sample_id}.trace.jsonl"
-
-        if resume and not force and trace_path.exists():
-            LOGGER.info("Skipping existing trace output for %s", sample_id)
+        original_sample_id = str(conversion.get("original_sample_id", ""))
+        metadata = metadata_by_sample.get(original_sample_id)
+        if metadata is None:
+            LOGGER.warning("Skipping LLMDFA record without build metadata: %s", original_sample_id)
             continue
 
-        pcode_result = load_pcode_jsonl(pcode_path)
-        callsite_result = load_callsites_jsonl(callsites_path)
-        if pcode_result.errors or callsite_result.errors:
-            LOGGER.warning(
-                "Parser errors for %s: pcode_errors=%s callsite_errors=%s",
-                sample_id,
-                len(pcode_result.errors),
-                len(callsite_result.errors),
-            )
-
-        functions = group_by_function(
-            pcode_result.records,
-            callsite_result.records,
-            anonymize_symbols=bool(dataset_config.get("anonymize_symbols", True)),
+        evidence = load_cached_evidence(
+            evidence_cache,
+            pcode_dir=pcode_dir,
+            metadata=metadata,
+            conversions=conversions,
         )
-        sample_traces = []
-        sample_records = []
-
-        for function in functions:
-            pairs = extract_source_sink_pairs(
-                [function],
-                rule,
-                unsupported_cwe_policy=analysis_config.get("unsupported_cwe_policy", "record_and_skip"),
+        attached = attach_ghidra_evidence(
+            llmdfa_record,
+            evidence,
+            function_entry=str(conversion.get("function_entry", "")),
+            function_id=str(conversion.get("function_id", "")),
+        )
+        dataset_records.append(
+            build_dataset_record(
+                attached,
+                conversion=conversion,
+                metadata=metadata,
+                ghidra_evidence=attached.get("ghidra_evidence", {}),
             )
-            traces = build_trace_candidates(function.ops, pairs, trace_type=str(rule.trace.get("type", "")))
-            total_traces += len(traces)
-            for trace in traces:
-                trace_payload = asdict(trace)
-                llm_review = {}
-                if llm_enabled:
-                    llm_review = review_trace_with_client(
-                        llm_client,
-                        function_ops=[op.to_dict() for op in function.ops],
-                        source=trace_payload["source"],
-                        sink=trace_payload["sink"],
-                        trace_candidate={
-                            "path_found": trace.path_found,
-                            "trace_ops": trace.trace_ops,
-                            "reason": trace.reason,
-                            "analysis_mode": trace.analysis_mode,
-                            "trace_type": trace.trace_type,
-                        },
-                    ).to_dict()
-                    trace_payload["llm_review"] = llm_review
-                sample_traces.append(trace_payload)
-                sample_records.append(build_dataset_record(trace, function=function, metadata=metadata, llm_review=llm_review))
+        )
+        if limit is not None and len(dataset_records) >= limit:
+            break
 
-        write_jsonl(trace_path, sample_traces)
-        dataset_records.extend(sample_records)
-        processed_samples += 1
-
-    dataset_path = output_dir / dataset_name(config, cwe_scope)
     write_jsonl(dataset_path, dataset_records)
     return {
-        "samples": processed_samples,
-        "traces": total_traces,
+        "llmdfa_records": len(llmdfa_records),
         "records": len(dataset_records),
         "dataset_path": dataset_path,
+        "leakage_failed": sum(1 for record in dataset_records if record.leakage_check.status == "failed"),
+        "resumed": False,
     }
+
+
+def load_llmdfa_records(parsed_path: Path, output_root: Path) -> list[dict[str, Any]]:
+    if parsed_path.exists():
+        return read_jsonl(parsed_path)
+    parsed = [record.to_dict() for record in parse_llmdfa_output(output_root)]
+    if parsed:
+        write_jsonl(parsed_path, parsed)
+    return parsed
+
+
+def load_cached_evidence(
+    cache: dict[tuple[str, str, str, str], Any],
+    *,
+    pcode_dir: Path,
+    metadata: dict[str, Any],
+    conversions: list[dict[str, Any]],
+) -> Any:
+    key = (
+        str(metadata.get("sample_id", "")),
+        str(metadata.get("cwe", "")),
+        str(metadata.get("variant", "")),
+        str(metadata.get("opt_level", "")),
+    )
+    if key in cache:
+        return cache[key]
+    pcode_path, callsites_path = evidence_paths_for_metadata(pcode_dir, metadata)
+    function_id_by_entry = {
+        str(record.get("function_entry", "")): str(record.get("function_id", ""))
+        for record in conversions
+        if str(record.get("original_sample_id", "")) == key[0]
+    }
+    evidence = load_sample_evidence(
+        pcode_path,
+        callsites_path,
+        sample_id=key[0],
+        function_id_by_entry=function_id_by_entry,
+    )
+    cache[key] = evidence
+    return evidence
+
+
+def find_conversion(
+    llmdfa_record: dict[str, Any],
+    conversions_by_source: dict[str, dict[str, Any]],
+    conversions_by_function: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    source_file = str(llmdfa_record.get("source_file", ""))
+    candidates = [
+        source_file,
+        Path(source_file).as_posix(),
+        Path(source_file).name,
+    ]
+    for candidate in candidates:
+        if candidate in conversions_by_source:
+            return conversions_by_source[candidate]
+
+    function_id = str(llmdfa_record.get("function_id", ""))
+    if function_id and function_id in conversions_by_function:
+        return conversions_by_function[function_id]
+    return None
+
+
+def index_conversions_by_source(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for record in records:
+        source_path = str(record.get("source_path", ""))
+        if not source_path:
+            continue
+        indexed[source_path] = record
+        indexed[Path(source_path).as_posix()] = record
+        indexed[Path(source_path).name] = record
+    return indexed
+
+
+def index_build_metadata(records: list[dict[str, Any]], *, cwe_scope: set[str] | None) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if record.get("compile_success") is not True:
+            continue
+        cwe = str(record.get("cwe", ""))
+        if cwe_scope is not None and cwe not in cwe_scope:
+            continue
+        indexed[str(record.get("sample_id", ""))] = record
+    return indexed
 
 
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -183,36 +242,10 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return records
 
 
-def select_build_records(
-    records: Iterable[dict[str, Any]],
-    *,
-    cwe_scope: set[str] | None,
-    limit: int | None,
-) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for record in records:
-        if record.get("compile_success") is not True:
-            continue
-        cwe = str(record.get("cwe", ""))
-        if cwe_scope is not None and cwe not in cwe_scope:
-            continue
-        key = (
-            str(record.get("sample_id", "")),
-            cwe,
-            str(record.get("variant", "")),
-            str(record.get("opt_level", "")),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        selected.append(record)
-        if limit is not None and len(selected) >= limit:
-            break
-    return selected
-
-
 def dataset_name(config: dict[str, Any], cwe_scope: set[str] | None) -> str:
+    dataset_config = config.get("dataset", {})
+    if dataset_config.get("filename"):
+        return str(dataset_config["filename"])
     if cwe_scope == {"CWE78"}:
         return "mvp_cwe78.jsonl"
     if cwe_scope and len(cwe_scope) == 1:

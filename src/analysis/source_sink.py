@@ -1,8 +1,8 @@
-"""Generic source and sink extraction helpers.
+"""DEPRECATED: P-code-native source and sink extraction helpers.
 
-This module intentionally does not define CWE78 or CWE134 rules. Callers pass
-in a normalized rule from `src.analysis.rule_registry`, and extraction logic
-uses the rule's `sources` and `sinks` fields generically.
+This module is preserved only for future optional experiments. The primary
+pipeline must use LLMDFA for source/sink/dataflow decisions and may use Ghidra
+P-code/callsite output only as binary-level evidence.
 """
 
 from __future__ import annotations

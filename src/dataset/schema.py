@@ -16,9 +16,8 @@ class DatasetRecord:
     variant: str
     binary_info: dict[str, Any]
     function_id: str
-    source_candidate: dict[str, Any]
-    sink_candidate: dict[str, Any]
-    trace_candidate: dict[str, Any]
+    llmdfa_result: dict[str, Any]
+    ghidra_evidence: dict[str, Any]
     analysis_mode: str
     metadata: dict[str, Any]
     model_input: dict[str, Any]

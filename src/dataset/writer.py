@@ -1,59 +1,66 @@
-"""Dataset writer for trace candidates."""
+"""Dataset writer for LLMDFA-primary records."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from src.analysis.source_sink import SinkCandidate, SourceCandidate
-from src.analysis.trace_builder import TraceCandidate
 from src.dataset.leakage_check import check_model_input
 from src.dataset.schema import DatasetRecord
-from src.pcode.schema import FunctionPcode
 
 
 def build_dataset_record(
-    trace: TraceCandidate,
+    llmdfa_record: dict[str, Any],
     *,
-    function: FunctionPcode,
+    conversion: dict[str, Any],
     metadata: dict[str, Any],
-    llm_review: dict[str, Any] | None = None,
+    ghidra_evidence: dict[str, Any] | None = None,
 ) -> DatasetRecord:
-    """Build a dataset record while keeping leakage-prone fields in metadata."""
+    """Build a dataset record with LLMDFA analysis as the primary result."""
 
+    model_input = build_model_input(llmdfa_record, conversion=conversion)
     source_filename = Path(str(metadata.get("source_path", ""))).name
-    model_input = build_model_input(trace)
     leakage_result = check_model_input(
         model_input,
         source_filename=source_filename,
-        original_function_name=function.original_function_name,
+        original_function_name=str(conversion.get("original_function_name", "")),
     )
-    warnings = list(dict.fromkeys([*trace.warnings, *leakage_result.warnings]))
-    record_id = make_record_id(trace.sample_id, trace.function_id, trace.sink.sink_location, trace.reason)
+    warnings = list(
+        dict.fromkeys(
+            [
+                *list(llmdfa_record.get("warnings", [])),
+                *list(conversion.get("warnings", [])),
+                *leakage_result.warnings,
+            ]
+        )
+    )
+    function_id = str(conversion.get("function_id") or llmdfa_record.get("function_id") or "")
+    sample_id = str(conversion.get("original_sample_id") or metadata.get("sample_id") or "")
 
     return DatasetRecord(
-        record_id=record_id,
-        sample_id=trace.sample_id,
-        cwe=str(metadata.get("cwe", trace.analysis_cwe)),
+        record_id=make_record_id(sample_id, function_id, str(llmdfa_record.get("record_id", ""))),
+        sample_id=sample_id,
+        cwe=str(metadata.get("cwe", "")),
         variant=str(metadata.get("variant", "")),
         binary_info={
             "binary_path": metadata.get("binary_path", ""),
             "sha256": metadata.get("sha256", ""),
             "opt_level": metadata.get("opt_level", ""),
         },
-        function_id=trace.function_id,
-        source_candidate=candidate_to_dict(trace.source),
-        sink_candidate=candidate_to_dict(trace.sink),
-        trace_candidate=trace_to_metadata_dict(trace, llm_review=llm_review),
-        analysis_mode=trace.analysis_mode,
+        function_id=function_id,
+        llmdfa_result=llmdfa_result_to_metadata(llmdfa_record),
+        ghidra_evidence=ghidra_evidence or {},
+        analysis_mode="llmdfa_primary",
         metadata={
             **metadata,
-            "original_function_name": function.original_function_name,
-            "function_entry": function.function_entry,
-            "llm_review": llm_review or {},
+            "llmdfa_record_id": llmdfa_record.get("record_id", ""),
+            "llmdfa_source_file": llmdfa_record.get("source_file", ""),
+            "converted_sample_id": conversion.get("sample_id", ""),
+            "converted_source_path": conversion.get("source_path", ""),
+            "original_function_name": conversion.get("original_function_name", ""),
+            "function_entry": conversion.get("function_entry", ""),
         },
         model_input=model_input,
         leakage_check=leakage_result,
@@ -61,48 +68,28 @@ def build_dataset_record(
     )
 
 
-def build_model_input(trace: TraceCandidate) -> dict[str, Any]:
-    """Build model input without CWE, variant, source path, or original symbols."""
+def build_model_input(llmdfa_record: dict[str, Any], *, conversion: dict[str, Any]) -> dict[str, Any]:
+    """Build model input from anonymized LLMDFA output only."""
 
     return {
-        "function_id": trace.function_id,
-        "source": {
-            "source_type": trace.source.source_type,
-            "source_location": trace.source.source_location,
-            "source_varnodes": trace.source.source_varnodes,
-            "confidence": trace.source.confidence,
-        },
-        "sink": {
-            "sink_type": trace.sink.sink_type,
-            "sink_location": trace.sink.sink_location,
-            "sink_varnodes": trace.sink.sink_varnodes,
-            "argument_indices": trace.sink.argument_indices,
-            "confidence": trace.sink.confidence,
-        },
-        "trace": {
-            "path_found": trace.path_found,
-            "trace_ops": trace.trace_ops,
-            "reason": trace.reason,
-            "analysis_mode": trace.analysis_mode,
-            "trace_type": trace.trace_type,
+        "function_id": str(conversion.get("function_id") or llmdfa_record.get("function_id") or ""),
+        "llmdfa": {
+            "source_sink_result": llmdfa_record.get("source_sink_result", {}),
+            "dataflow_result": llmdfa_record.get("dataflow_result", {}),
+            "path_validation_result": llmdfa_record.get("path_validation_result", {}),
         },
     }
 
 
-def candidate_to_dict(candidate: SourceCandidate | SinkCandidate) -> dict[str, Any]:
-    return asdict(candidate)
-
-
-def trace_to_metadata_dict(trace: TraceCandidate, *, llm_review: dict[str, Any] | None = None) -> dict[str, Any]:
+def llmdfa_result_to_metadata(llmdfa_record: dict[str, Any]) -> dict[str, Any]:
     return {
-        "path_found": trace.path_found,
-        "trace_ops": trace.trace_ops,
-        "reason": trace.reason,
-        "analysis_mode": trace.analysis_mode,
-        "analysis_cwe": trace.analysis_cwe,
-        "trace_type": trace.trace_type,
-        "warnings": trace.warnings,
-        "llm_review": llm_review or {},
+        "record_id": llmdfa_record.get("record_id", ""),
+        "source_file": llmdfa_record.get("source_file", ""),
+        "source_sink_result": llmdfa_record.get("source_sink_result", {}),
+        "dataflow_result": llmdfa_record.get("dataflow_result", {}),
+        "path_validation_result": llmdfa_record.get("path_validation_result", {}),
+        "raw_output": llmdfa_record.get("raw_output", {}),
+        "warnings": llmdfa_record.get("warnings", []),
     }
 
 
@@ -113,10 +100,7 @@ def write_jsonl(path: str | Path, records: Iterable[dict[str, Any] | DatasetReco
     count = 0
     with output_path.open(mode, encoding="utf-8") as handle:
         for record in records:
-            if isinstance(record, DatasetRecord):
-                payload = record.to_dict()
-            else:
-                payload = record
+            payload = record.to_dict() if isinstance(record, DatasetRecord) else record
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
             count += 1
     return count
@@ -125,3 +109,4 @@ def write_jsonl(path: str | Path, records: Iterable[dict[str, Any] | DatasetReco
 def make_record_id(*parts: str) -> str:
     digest = hashlib.sha1(":".join(parts).encode("utf-8")).hexdigest()[:16]
     return f"record_{digest}"
+

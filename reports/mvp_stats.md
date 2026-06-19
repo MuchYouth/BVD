@@ -2,15 +2,18 @@
 
 ## Build Summary
 
-- Attempted: 0
+- Attempted: 4
 - Success: 0
-- Failed: 0
-- Compiler: n/a
-- Opt level: n/a
+- Failed: 4
+- Skipped: 0
+- Skip reason: n/a
+- Compiler: gcc=4
+- Opt level: O0=4
 
 ## Ghidra Extraction Summary
 
 - Analyzed binaries: 0
+- Decompile success: 0
 - P-code extraction success: 0
 - Callsite extraction success: 0
 - Decompile failure count: 0
@@ -18,14 +21,13 @@
 - Average P-code ops per function: 0.00
 - Average callsites per binary: 0.00
 
-## Trace Summary
+## LLMDFA Summary
 
-- Source candidate count: 0
-- Sink candidate count: 0
-- Source-sink pair count: 0
-- Path found: 0
-- Path not found: 0
-- Path unknown: 0
+- Parsed records: 0
+- Source/sink result count: 0
+- Dataflow result count: 0
+- Path validation result count: 0
+- Warning count: 0
 
 ## Dataset Leakage Check
 
@@ -34,4 +36,4 @@
 
 ## Sample Records
 
-No trace records available.
+No dataset records available.
